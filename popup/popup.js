@@ -323,34 +323,6 @@ function resetUsageData() {
   });
 }
 
-// Debug functions
-function toggleDebugSection() {
-  const debugSection = document.getElementById("debug-section");
-  if (debugSection.style.display === "none") {
-    debugSection.style.display = "block";
-    loadDebugInfo();
-  } else {
-    debugSection.style.display = "none";
-  }
-}
-
-function loadDebugInfo() {
-  chrome.runtime.sendMessage({ action: 'getDebugInfo' }, (response) => {
-    const debugDiv = document.getElementById("debug-info");
-    if (response) {
-      const info = {
-        "Current Tracking State": response.state,
-        "Usage Data": response.usage,
-        "Limits": response.limits,
-        "Timestamp": new Date().toLocaleString()
-      };
-      debugDiv.textContent = JSON.stringify(info, null, 2);
-    } else {
-      debugDiv.textContent = "Error loading debug info";
-    }
-  });
-}
-
 // Initialize when DOM is loaded
 document.addEventListener("DOMContentLoaded", () => {
   console.log("[DOMContentLoaded] Popup loaded. Initializing...");
@@ -362,8 +334,6 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("cancel-modal").addEventListener("click", closeModal);
   document.getElementById("modal-close").addEventListener("click", closeModal);
   document.getElementById("save-limit").addEventListener("click", saveLimit);
-  document.getElementById("debug-toggle-button").addEventListener("click", toggleDebugSection);
-  document.getElementById("refresh-debug-button").addEventListener("click", loadDebugInfo);
 
   // Open database and display data
   openDatabase()
