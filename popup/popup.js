@@ -224,7 +224,7 @@ async function displayUsageData() {
       // Add total time
       const totalTime = websiteList.reduce((sum, w) => sum + w.usedTime, 0);
       const totalElement = document.createElement('div');
-      totalElement.className = 'box has-background-info-light mt-3';
+      totalElement.className = 'box total-time-box mt-3';
       totalElement.innerHTML = `<strong>Total Time Today:</strong> ${formatTime(totalTime)}`;
       usageListElement.appendChild(totalElement);
     }
