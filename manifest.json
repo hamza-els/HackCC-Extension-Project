@@ -17,7 +17,8 @@
     "tabs",
     "storage",
     "notifications",
-    "activeTab"
+    "activeTab",
+    "alarms"
   ],
   "host_permissions": [
     "<all_urls>"

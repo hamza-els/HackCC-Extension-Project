@@ -1,175 +1,216 @@
-let activeTabId = null; // ID of the currently active tab
-let activeTabStartTime = null; // Start time of the active tab
-const usageData = {}; // Object to store usage data
-const warningStates = {}; // Track which warnings have been shown for each hostname
+// Manifest V3 service workers can terminate at any time
+// We must persist state to storage, not keep in memory
 
 const dbName = 'usageDataDB';
 const storeName = 'usageStore';
 let db = null;
 
+// ============= DATABASE FUNCTIONS =============
+
 // Open the IndexedDB database
-function openDatabase() {
-  console.log('Opening IndexedDB...');
-  const request = indexedDB.open(dbName, 1);
+async function openDatabase() {
+  return new Promise((resolve, reject) => {
+    console.log('[DB] Opening IndexedDB...');
+    const request = indexedDB.open(dbName, 1);
 
-  request.onupgradeneeded = (event) => {
-    console.log('IndexedDB upgrade needed...');
-    db = event.target.result;
-    const store = db.createObjectStore(storeName, { keyPath: 'hostname' });
-    store.createIndex('hostname', 'hostname', { unique: true });
-    console.log('Object store created in IndexedDB');
-  };
+    request.onupgradeneeded = (event) => {
+      console.log('[DB] Upgrade needed, creating object store...');
+      const database = event.target.result;
+      if (!database.objectStoreNames.contains(storeName)) {
+        database.createObjectStore(storeName, { keyPath: 'hostname' });
+        console.log('[DB] Object store created');
+      }
+    };
 
-  request.onsuccess = (event) => {
-    db = event.target.result;
-    console.log('Database opened successfully');
-  };
+    request.onsuccess = (event) => {
+      db = event.target.result;
+      console.log('[DB] Database opened successfully');
+      resolve(db);
+    };
 
-  request.onerror = (event) => {
-    console.error('Database error:', event.target.error);
-  };
-}
-
-openDatabase();
-
-// Load existing usage data from IndexedDB into memory
-async function loadUsageData() {
-  console.log('Loading existing usage data from IndexedDB...');
-  if (!db) {
-    console.error('Database not open yet, cannot load usage data.');
-    setTimeout(loadUsageData, 1000); // Retry after 1 second
-    return;
-  }
-
-  const transaction = db.transaction([storeName], 'readonly');
-  const store = transaction.objectStore(storeName);
-  const request = store.getAll();
-
-  request.onsuccess = (event) => {
-    const records = event.target.result;
-    records.forEach(record => {
-      usageData[record.hostname] = record.time;
-    });
-    console.log('Usage data loaded from IndexedDB:', usageData);
-  };
-
-  request.onerror = (event) => {
-    console.error('Error loading data from IndexedDB:', event.target.error);
-  };
-}
-
-// Check if we need to reset daily data
-async function checkDailyReset() {
-  console.log('Checking if daily reset is needed...');
-  chrome.storage.local.get(['lastResetDate'], (data) => {
-    const today = new Date().toDateString();
-    const lastResetDate = data.lastResetDate;
-
-    if (lastResetDate !== today) {
-      console.log('Performing daily reset...');
-      resetAllUsageData();
-      chrome.storage.local.set({ lastResetDate: today });
-    } else {
-      console.log('Daily reset not needed. Last reset:', lastResetDate);
-    }
+    request.onerror = (event) => {
+      console.error('[DB] Database error:', event.target.error);
+      reject(event.target.error);
+    };
   });
 }
 
-// Reset all usage data
-function resetAllUsageData() {
-  console.log('Resetting all usage data...');
+// Get usage time for a specific hostname from IndexedDB
+async function getUsageTime(hostname) {
+  if (!db) await openDatabase();
 
-  // Clear in-memory data
-  for (const key in usageData) {
-    delete usageData[key];
-  }
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction([storeName], 'readonly');
+    const store = transaction.objectStore(storeName);
+    const request = store.get(hostname);
 
-  // Clear warning states
-  for (const key in warningStates) {
-    delete warningStates[key];
-  }
+    request.onsuccess = (event) => {
+      const result = event.target.result;
+      resolve(result ? result.time : 0);
+    };
 
-  // Clear IndexedDB
-  if (!db) {
-    console.error('Database not open yet, cannot reset usage data.');
-    return;
-  }
-
-  const transaction = db.transaction([storeName], 'readwrite');
-  const store = transaction.objectStore(storeName);
-  const request = store.clear();
-
-  request.onsuccess = () => {
-    console.log('All usage data cleared from IndexedDB');
-  };
-
-  request.onerror = (event) => {
-    console.error('Error clearing IndexedDB:', event.target.error);
-  };
+    request.onerror = (event) => {
+      console.error('[DB] Error getting usage time:', event.target.error);
+      reject(event.target.error);
+    };
+  });
 }
 
-// Wait for database to open, then load data and check for daily reset
-setTimeout(() => {
-  loadUsageData();
-  checkDailyReset();
-}, 1000);
+// Save or update usage time for a hostname
+async function saveUsageTime(hostname, timeInMinutes) {
+  if (!db) await openDatabase();
 
-// Save usage data to IndexedDB
-async function saveUsageData() {
-  console.log('Attempting to save usage data to IndexedDB...');
-  if (!db) {
-    console.error('Database not open yet, cannot save usage data.');
-    return;
-  }
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction([storeName], 'readwrite');
+    const store = transaction.objectStore(storeName);
+    const record = { hostname, time: timeInMinutes };
+    const request = store.put(record);
 
-  const transaction = db.transaction([storeName], 'readwrite');
-  const store = transaction.objectStore(storeName);
+    request.onsuccess = () => {
+      console.log(`[DB] Saved: ${hostname} = ${timeInMinutes} minutes`);
+      resolve();
+    };
 
-  for (const [hostname, time] of Object.entries(usageData)) {
-    console.log(`Saving data for hostname: ${hostname}, time: ${time}`);
-    const record = { hostname, time };
-    await new Promise((resolve, reject) => {
-      const request = store.put(record); // Use put() to insert or update the data
-      request.onsuccess = resolve;
-      request.onerror = (event) => reject(event.target.error);
-    });
-  }
-
-  transaction.oncomplete = () => {
-    console.log('Usage data saved to IndexedDB:', usageData);
-  };
-
-  transaction.onerror = (event) => {
-    console.error('Error saving data to IndexedDB:', event.target.error);
-  };
+    request.onerror = (event) => {
+      console.error('[DB] Error saving usage time:', event.target.error);
+      reject(event.target.error);
+    };
+  });
 }
 
-// Fetch limits from chrome.storage.local
-function getLimits() {
-  console.log('Fetching limits from chrome.storage.local...');
+// Get all usage data from IndexedDB
+async function getAllUsageData() {
+  if (!db) await openDatabase();
+
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction([storeName], 'readonly');
+    const store = transaction.objectStore(storeName);
+    const request = store.getAll();
+
+    request.onsuccess = (event) => {
+      resolve(event.target.result);
+    };
+
+    request.onerror = (event) => {
+      console.error('[DB] Error getting all usage data:', event.target.error);
+      reject(event.target.error);
+    };
+  });
+}
+
+// Clear all usage data
+async function clearAllUsageData() {
+  if (!db) await openDatabase();
+
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction([storeName], 'readwrite');
+    const store = transaction.objectStore(storeName);
+    const request = store.clear();
+
+    request.onsuccess = () => {
+      console.log('[DB] All usage data cleared');
+      resolve();
+    };
+
+    request.onerror = (event) => {
+      console.error('[DB] Error clearing data:', event.target.error);
+      reject(event.target.error);
+    };
+  });
+}
+
+// ============= STATE MANAGEMENT =============
+
+// Get current tracking state from chrome.storage.session
+async function getTrackingState() {
   return new Promise((resolve) => {
-    chrome.storage.local.get(["limits"], (data) => {
-      console.log('Limits fetched:', data.limits || {});
+    chrome.storage.session.get(['activeTabId', 'activeTabStartTime', 'activeTabUrl'], (data) => {
+      resolve({
+        activeTabId: data.activeTabId || null,
+        activeTabStartTime: data.activeTabStartTime || null,
+        activeTabUrl: data.activeTabUrl || null
+      });
+    });
+  });
+}
+
+// Save tracking state to chrome.storage.session
+async function saveTrackingState(activeTabId, activeTabStartTime, activeTabUrl) {
+  return new Promise((resolve) => {
+    chrome.storage.session.set({
+      activeTabId,
+      activeTabStartTime,
+      activeTabUrl
+    }, () => {
+      console.log(`[STATE] Saved: Tab ${activeTabId}, URL: ${activeTabUrl}, Start: ${activeTabStartTime}`);
+      resolve();
+    });
+  });
+}
+
+// Clear tracking state
+async function clearTrackingState() {
+  return new Promise((resolve) => {
+    chrome.storage.session.remove(['activeTabId', 'activeTabStartTime', 'activeTabUrl'], () => {
+      console.log('[STATE] Cleared tracking state');
+      resolve();
+    });
+  });
+}
+
+// ============= UTILITY FUNCTIONS =============
+
+// Check if a URL is supported (http or https only)
+function isSupportedUrl(url) {
+  if (!url) return false;
+  try {
+    const protocol = new URL(url).protocol;
+    return protocol === 'http:' || protocol === 'https:';
+  } catch (error) {
+    return false;
+  }
+}
+
+// Get hostname from URL
+function getHostname(url) {
+  try {
+    return new URL(url).hostname;
+  } catch (error) {
+    console.error('[UTIL] Error parsing URL:', error);
+    return null;
+  }
+}
+
+// Get limits from chrome.storage.local
+async function getLimits() {
+  return new Promise((resolve) => {
+    chrome.storage.local.get(['limits'], (data) => {
       resolve(data.limits || {});
     });
   });
 }
 
-// Check if a URL is supported (e.g., exclude chrome:// or internal URLs)
-function isSupportedUrl(url) {
-  try {
-    const protocol = new URL(url).protocol;
-    console.log(`Checking URL support for: ${url}`);
-    return protocol === "http:" || protocol === "https:";
-  } catch (error) {
-    console.error('Error checking URL support:', error);
-    return false;
-  }
+// Get warning states from chrome.storage.session
+async function getWarningStates() {
+  return new Promise((resolve) => {
+    chrome.storage.session.get(['warningStates'], (data) => {
+      resolve(data.warningStates || {});
+    });
+  });
 }
 
-// Notify the user when a tab is closed due to exceeding the time limit
-function notifyUser(hostname, type = "limit") {
-  console.log(`Notifying user about ${type} for: ${hostname}`);
+// Save warning states
+async function saveWarningStates(warningStates) {
+  return new Promise((resolve) => {
+    chrome.storage.session.set({ warningStates }, () => {
+      resolve();
+    });
+  });
+}
+
+// ============= NOTIFICATION FUNCTIONS =============
+
+function notifyUser(hostname, type = 'limit') {
   const messages = {
     limit: `Your time limit for ${hostname} has been reached, and the tab has been closed.`,
     warning80: `You've used 80% of your time limit for ${hostname}. You have a few minutes remaining.`,
@@ -177,186 +218,336 @@ function notifyUser(hostname, type = "limit") {
   };
 
   const titles = {
-    limit: "Time Limit Reached",
-    warning80: "Time Limit Warning",
-    warning90: "Time Limit Warning"
+    limit: 'Time Limit Reached',
+    warning80: 'Time Limit Warning',
+    warning90: 'Time Limit Warning'
   };
 
   chrome.notifications.create({
-    type: "basic",
-    iconUrl: "img/icon64.png",
-    title: titles[type] || "Screen Time Notification",
+    type: 'basic',
+    iconUrl: 'img/icon64.png',
+    title: titles[type] || 'Screen Time Notification',
     message: messages[type] || `Notification for ${hostname}`,
   });
 }
 
-// Check if a tab exceeds its limit and close it if necessary
-async function checkAndCloseTab(hostname, tabId) {
-  console.log(`Checking time limits for hostname: ${hostname}, Tab ID: ${tabId}`);
-  const limits = await getLimits();
-  if (limits[hostname]) {
-    const limit = limits[hostname];
-    const usedTime = usageData[hostname] || 0;
-    const percentage = (usedTime / limit) * 100;
+// ============= TIME TRACKING FUNCTIONS =============
 
-    console.log(`[checkAndCloseTab] Hostname: ${hostname}, Used: ${usedTime} mins, Limit: ${limit} mins, Percentage: ${percentage.toFixed(1)}%`);
+// Record time for the currently tracked tab
+async function recordCurrentTabTime() {
+  const state = await getTrackingState();
 
-    // Initialize warning state for this hostname if it doesn't exist
-    if (!warningStates[hostname]) {
-      warningStates[hostname] = { warning80: false, warning90: false };
-    }
-
-    // Check if limit is exceeded
-    if (usedTime >= limit) {
-      console.log(`Time limit exceeded for ${hostname}. Closing tab ID: ${tabId}`);
-      chrome.tabs.remove(tabId, () => {
-        if (chrome.runtime.lastError) {
-          console.error(`[checkAndCloseTab] Error closing tab: ${chrome.runtime.lastError.message}`);
-        } else {
-          console.log(`[checkAndCloseTab] Tab with ID ${tabId} closed due to exceeded limit.`);
-          notifyUser(hostname, "limit");
-          // Reset warning states after limit is reached
-          warningStates[hostname] = { warning80: false, warning90: false };
-        }
-      });
-    }
-    // Check if 90% warning should be shown
-    else if (percentage >= 90 && !warningStates[hostname].warning90) {
-      console.log(`[checkAndCloseTab] 90% warning for ${hostname}`);
-      notifyUser(hostname, "warning90");
-      warningStates[hostname].warning90 = true;
-    }
-    // Check if 80% warning should be shown
-    else if (percentage >= 80 && !warningStates[hostname].warning80) {
-      console.log(`[checkAndCloseTab] 80% warning for ${hostname}`);
-      notifyUser(hostname, "warning80");
-      warningStates[hostname].warning80 = true;
-    }
-  } else {
-    console.log(`[checkAndCloseTab] No limit set for hostname: ${hostname}`);
-  }
-}
-
-// Record time spent on a tab
-async function recordTabTime(tabId) {
-  console.log(`Recording time for Tab ID: ${tabId}`);
-  if (!tabId || !activeTabStartTime) {
-    console.log('No active tab or start time; skipping time recording.');
+  if (!state.activeTabId || !state.activeTabStartTime || !state.activeTabUrl) {
+    console.log('[TRACK] No active tracking session');
     return;
   }
 
-  const elapsedTime = Math.round((Date.now() - activeTabStartTime) / 1000 / 60); // Convert to minutes
-  console.log(`Elapsed time for Tab ID ${tabId}: ${elapsedTime} minutes`);
+  // Calculate elapsed time in seconds
+  const elapsedSeconds = Math.floor((Date.now() - state.activeTabStartTime) / 1000);
 
-  if (elapsedTime > 0) {
+  if (elapsedSeconds < 1) {
+    console.log('[TRACK] Less than 1 second elapsed, skipping');
+    return;
+  }
+
+  const hostname = getHostname(state.activeTabUrl);
+  if (!hostname) {
+    console.log('[TRACK] Could not extract hostname');
+    return;
+  }
+
+  // Get current usage time and add elapsed time
+  const currentUsage = await getUsageTime(hostname);
+  const elapsedMinutes = Math.ceil(elapsedSeconds / 60); // Round up to count partial minutes
+  const newUsage = currentUsage + elapsedMinutes;
+
+  console.log(`[TRACK] Recording: ${hostname} - ${elapsedMinutes} min (${elapsedSeconds}s), Total: ${newUsage} min`);
+
+  // Save to database
+  await saveUsageTime(hostname, newUsage);
+
+  // Check limits
+  await checkAndEnforceLimits(hostname, newUsage, state.activeTabId);
+
+  // Reset start time to now (to avoid double-counting)
+  await saveTrackingState(state.activeTabId, Date.now(), state.activeTabUrl);
+}
+
+// Check limits and close tab if exceeded
+async function checkAndEnforceLimits(hostname, usedTime, tabId) {
+  const limits = await getLimits();
+  const limit = limits[hostname];
+
+  if (!limit) {
+    console.log(`[LIMIT] No limit set for ${hostname}`);
+    return;
+  }
+
+  const percentage = (usedTime / limit) * 100;
+  console.log(`[LIMIT] ${hostname}: ${usedTime}/${limit} min (${percentage.toFixed(1)}%)`);
+
+  // Get warning states
+  const warningStates = await getWarningStates();
+  if (!warningStates[hostname]) {
+    warningStates[hostname] = { warning80: false, warning90: false };
+  }
+
+  // Check if limit exceeded
+  if (usedTime >= limit) {
+    console.log(`[LIMIT] EXCEEDED for ${hostname}, closing tab ${tabId}`);
+
     try {
-      const tab = await new Promise((resolve, reject) => {
-        chrome.tabs.get(tabId, (tab) => {
-          if (chrome.runtime.lastError || !tab || !tab.url) {
-            reject('Error getting tab information');
-          } else {
-            resolve(tab);
-          }
-        });
-      });
+      await chrome.tabs.remove(tabId);
+      notifyUser(hostname, 'limit');
 
-      if (!isSupportedUrl(tab.url)) {
-        console.log(`[recordTabTime] Unsupported URL: ${tab.url}`);
-        return;
-      }
+      // Reset warnings
+      warningStates[hostname] = { warning80: false, warning90: false };
+      await saveWarningStates(warningStates);
 
-      const url = new URL(tab.url);
-      const hostname = url.hostname;
-
-      console.log(`[recordTabTime] Updating usage data for hostname: ${hostname}`);
-      if (!usageData[hostname]) usageData[hostname] = 0;
-      usageData[hostname] += elapsedTime;
-
-      await saveUsageData();
-
-      await checkAndCloseTab(hostname, tabId);
+      // Clear tracking state since tab is closed
+      await clearTrackingState();
     } catch (error) {
-      console.error('Error processing tab time:', error);
+      console.error('[LIMIT] Error closing tab:', error);
     }
+  }
+  // Check for 90% warning
+  else if (percentage >= 90 && !warningStates[hostname].warning90) {
+    console.log(`[LIMIT] 90% warning for ${hostname}`);
+    notifyUser(hostname, 'warning90');
+    warningStates[hostname].warning90 = true;
+    await saveWarningStates(warningStates);
+  }
+  // Check for 80% warning
+  else if (percentage >= 80 && !warningStates[hostname].warning80) {
+    console.log(`[LIMIT] 80% warning for ${hostname}`);
+    notifyUser(hostname, 'warning80');
+    warningStates[hostname].warning80 = true;
+    await saveWarningStates(warningStates);
   }
 }
 
-// Listen for tab activation
-chrome.tabs.onActivated.addListener((activeInfo) => {
-  console.log('Tab activated:', activeInfo);
-  if (activeTabId !== null) {
-    console.log(`Switching away from Tab ID: ${activeTabId}`);
-    recordTabTime(activeTabId);
+// Start tracking a new tab
+async function startTrackingTab(tabId, url) {
+  if (!isSupportedUrl(url)) {
+    console.log(`[TRACK] Unsupported URL: ${url}`);
+    await clearTrackingState();
+    return;
   }
 
-  activeTabId = activeInfo.tabId;
-  activeTabStartTime = Date.now();
-  console.log(`New active Tab ID: ${activeTabId}`);
-});
+  console.log(`[TRACK] Starting tracking: Tab ${tabId}, URL: ${url}`);
+  await saveTrackingState(tabId, Date.now(), url);
+}
 
-// Listen for tab updates
-chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
-  console.log(`Tab updated: Tab ID: ${tabId}, Change Info:`, changeInfo);
+// Stop tracking current tab and record time
+async function stopTrackingCurrentTab() {
+  console.log('[TRACK] Stopping current tracking');
+  await recordCurrentTabTime();
+  await clearTrackingState();
+}
 
-  // When the active tab's URL changes, record time for the previous URL
-  if (tabId === activeTabId && changeInfo.url) {
-    console.log(`Active tab URL changed from previous to: ${changeInfo.url}`);
-    recordTabTime(tabId);
-    activeTabStartTime = Date.now();
-    console.log(`Tab ID ${tabId} URL changed; start time reset.`);
+// ============= EVENT LISTENERS =============
+
+// When a tab becomes active
+chrome.tabs.onActivated.addListener(async (activeInfo) => {
+  console.log(`[EVENT] Tab activated: ${activeInfo.tabId}`);
+
+  // Record time for previous tab
+  await recordCurrentTabTime();
+
+  // Start tracking new tab
+  try {
+    const tab = await chrome.tabs.get(activeInfo.tabId);
+    await startTrackingTab(tab.id, tab.url);
+  } catch (error) {
+    console.error('[EVENT] Error getting tab info:', error);
+    await clearTrackingState();
   }
 });
 
-// Listen for tab removal
-chrome.tabs.onRemoved.addListener((tabId) => {
-  console.log(`Tab removed: Tab ID ${tabId}`);
-  if (tabId === activeTabId) {
-    recordTabTime(tabId);
-    activeTabId = null;
-    activeTabStartTime = null;
-    console.log('Active tab cleared after removal.');
+// When a tab is updated (URL change, page load, etc.)
+chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, tab) => {
+  // Only care about URL changes on the active tab
+  if (changeInfo.url) {
+    console.log(`[EVENT] Tab ${tabId} URL changed to: ${changeInfo.url}`);
+
+    const state = await getTrackingState();
+
+    // If this is the currently tracked tab, record time and start tracking new URL
+    if (state.activeTabId === tabId) {
+      await recordCurrentTabTime();
+      await startTrackingTab(tabId, changeInfo.url);
+    }
   }
 });
 
-// Listen for window focus changes
-chrome.windows.onFocusChanged.addListener((windowId) => {
-  console.log(`Window focus changed: Window ID ${windowId}`);
+// When a tab is removed
+chrome.tabs.onRemoved.addListener(async (tabId) => {
+  console.log(`[EVENT] Tab removed: ${tabId}`);
+
+  const state = await getTrackingState();
+
+  // If this was the tracked tab, record time
+  if (state.activeTabId === tabId) {
+    await recordCurrentTabTime();
+    await clearTrackingState();
+  }
+});
+
+// When window focus changes
+chrome.windows.onFocusChanged.addListener(async (windowId) => {
+  console.log(`[EVENT] Window focus changed: ${windowId}`);
+
   if (windowId === chrome.windows.WINDOW_ID_NONE) {
-    console.log('No window in focus.');
-    recordTabTime(activeTabId);
-    activeTabId = null;
-    activeTabStartTime = null;
+    // Lost focus, stop tracking
+    console.log('[EVENT] Browser lost focus');
+    await stopTrackingCurrentTab();
   } else {
-    chrome.tabs.query({ active: true, windowId }, (tabs) => {
+    // Gained focus, find active tab
+    try {
+      const tabs = await chrome.tabs.query({ active: true, windowId });
       if (tabs.length > 0) {
-        activeTabId = tabs[0].id;
-        activeTabStartTime = Date.now();
-        console.log(`Window focus switched to Tab ID: ${activeTabId}`);
+        await startTrackingTab(tabs[0].id, tabs[0].url);
       }
-    });
+    } catch (error) {
+      console.error('[EVENT] Error querying tabs:', error);
+    }
   }
 });
 
-// Listen for messages from popup
+// ============= PERIODIC TRACKING =============
+
+// Create alarm for periodic tracking (every 30 seconds)
+chrome.alarms.create('trackTime', { periodInMinutes: 0.5 }); // 30 seconds
+
+chrome.alarms.onAlarm.addListener(async (alarm) => {
+  if (alarm.name === 'trackTime') {
+    console.log('[ALARM] Periodic time recording');
+    await recordCurrentTabTime();
+  } else if (alarm.name === 'checkDailyReset') {
+    await checkDailyReset();
+  }
+});
+
+// ============= DAILY RESET =============
+
+// Check if we need to reset daily data
+async function checkDailyReset() {
+  return new Promise((resolve) => {
+    chrome.storage.local.get(['lastResetDate'], async (data) => {
+      const today = new Date().toDateString();
+      const lastResetDate = data.lastResetDate;
+
+      if (lastResetDate !== today) {
+        console.log('[RESET] Performing daily reset...');
+        await clearAllUsageData();
+
+        // Clear warning states
+        await chrome.storage.session.remove(['warningStates']);
+
+        chrome.storage.local.set({ lastResetDate: today });
+      }
+      resolve();
+    });
+  });
+}
+
+// Check for daily reset every hour
+chrome.alarms.create('checkDailyReset', { periodInMinutes: 60 });
+
+// ============= MESSAGE HANDLERS =============
+
 chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-  console.log('[onMessage] Message received:', request);
+  console.log('[MESSAGE] Received:', request);
 
   if (request.action === 'resetUsageData') {
-    console.log('[onMessage] Resetting usage data...');
-    resetAllUsageData();
-    sendResponse({ status: 'success', message: 'Usage data reset successfully' });
-  } else if (request.action === 'deleteLimit') {
-    console.log('[onMessage] Deleting limit for:', request.hostname);
+    clearAllUsageData()
+      .then(async () => {
+        await chrome.storage.session.remove(['warningStates']);
+        sendResponse({ status: 'success', message: 'Usage data reset successfully' });
+      })
+      .catch((error) => {
+        sendResponse({ status: 'error', message: error.message });
+      });
+    return true;
+  }
+  else if (request.action === 'deleteLimit') {
     chrome.storage.local.get(['limits'], (data) => {
       const limits = data.limits || {};
       delete limits[request.hostname];
       chrome.storage.local.set({ limits }, () => {
-        console.log('[onMessage] Limit deleted for:', request.hostname);
         sendResponse({ status: 'success', message: 'Limit deleted successfully' });
       });
     });
-    return true; // Keep the message channel open for async response
+    return true;
+  }
+  else if (request.action === 'getDebugInfo') {
+    // For debugging
+    Promise.all([
+      getTrackingState(),
+      getAllUsageData(),
+      getLimits()
+    ]).then(([state, usage, limits]) => {
+      sendResponse({ state, usage, limits });
+    });
+    return true;
   }
 
   return true;
+});
+
+// ============= INITIALIZATION =============
+
+// Initialize on install/update
+chrome.runtime.onInstalled.addListener(async () => {
+  console.log('[INIT] Extension installed/updated');
+
+  // Open database
+  await openDatabase();
+
+  // Check for daily reset
+  await checkDailyReset();
+
+  // Start tracking current tab
+  try {
+    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (tabs.length > 0) {
+      await startTrackingTab(tabs[0].id, tabs[0].url);
+    }
+  } catch (error) {
+    console.error('[INIT] Error starting initial tracking:', error);
+  }
+});
+
+// Initialize on service worker startup
+chrome.runtime.onStartup.addListener(async () => {
+  console.log('[STARTUP] Browser started');
+
+  // Open database
+  await openDatabase();
+
+  // Check for daily reset
+  await checkDailyReset();
+
+  // Start tracking current tab
+  try {
+    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+    if (tabs.length > 0) {
+      await startTrackingTab(tabs[0].id, tabs[0].url);
+    }
+  } catch (error) {
+    console.error('[STARTUP] Error starting initial tracking:', error);
+  }
+});
+
+// Initialize database immediately
+console.log('[INIT] Service worker started');
+openDatabase().then(() => {
+  console.log('[INIT] Database ready');
+
+  // Start tracking if there's an active tab
+  chrome.tabs.query({ active: true, currentWindow: true }).then((tabs) => {
+    if (tabs.length > 0) {
+      startTrackingTab(tabs[0].id, tabs[0].url);
+    }
+  });
 });

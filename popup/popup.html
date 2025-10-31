@@ -70,6 +70,18 @@
       <button class="button is-danger" id="reset-usage-button">
         <span>Reset Usage</span>
       </button>
+      <button class="button is-info is-light" id="debug-toggle-button">
+        <span>Debug Info</span>
+      </button>
+    </div>
+  </div>
+
+  <!-- Debug section -->
+  <div class="container m-3" id="debug-section" style="display: none;">
+    <div class="box has-background-warning-light">
+      <h2 class="title is-6">Debug Information</h2>
+      <div id="debug-info" style="font-family: monospace; font-size: 0.85rem; white-space: pre-wrap;"></div>
+      <button class="button is-small mt-2" id="refresh-debug-button">Refresh</button>
     </div>
   </div>
 
