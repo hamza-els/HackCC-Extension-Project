@@ -245,6 +245,15 @@ async function recordCurrentTabTime() {
   // Calculate elapsed time in seconds
   const elapsedSeconds = Math.floor((Date.now() - state.activeTabStartTime) / 1000);
 
+  // SAFETY CHECK: If elapsed time is more than 10 minutes, something is wrong
+  // (computer was asleep, browser was closed, etc.)
+  const MAX_ELAPSED_SECONDS = 600; // 10 minutes
+  if (elapsedSeconds > MAX_ELAPSED_SECONDS) {
+    console.log(`[TRACK] WARNING: Elapsed time too long (${elapsedSeconds}s / ${Math.floor(elapsedSeconds/60)}min). Likely due to sleep/suspend. Clearing tracking state.`);
+    await clearTrackingState();
+    return;
+  }
+
   if (elapsedSeconds < 1) {
     console.log('[TRACK] Less than 1 second elapsed, skipping');
     return;
@@ -419,10 +428,24 @@ chrome.windows.onFocusChanged.addListener(async (windowId) => {
 // Create alarm for periodic tracking (every 30 seconds)
 chrome.alarms.create('trackTime', { periodInMinutes: 0.5 }); // 30 seconds
 
+// Store last alarm time to detect sleep/suspend
+let lastAlarmTime = Date.now();
+
 chrome.alarms.onAlarm.addListener(async (alarm) => {
   if (alarm.name === 'trackTime') {
-    console.log('[ALARM] Periodic time recording');
-    await recordCurrentTabTime();
+    const now = Date.now();
+    const timeSinceLastAlarm = Math.floor((now - lastAlarmTime) / 1000);
+
+    // If more than 2 minutes since last alarm, computer was likely asleep
+    if (timeSinceLastAlarm > 120) {
+      console.log(`[ALARM] WARNING: ${timeSinceLastAlarm}s since last alarm. Computer was likely asleep. Clearing tracking state.`);
+      await clearTrackingState();
+    } else {
+      console.log('[ALARM] Periodic time recording');
+      await recordCurrentTabTime();
+    }
+
+    lastAlarmTime = now;
   } else if (alarm.name === 'checkDailyReset') {
     await checkDailyReset();
   }
@@ -538,6 +561,38 @@ chrome.runtime.onStartup.addListener(async () => {
     console.error('[STARTUP] Error starting initial tracking:', error);
   }
 });
+
+// Detect when service worker is about to suspend
+chrome.runtime.onSuspend.addListener(async () => {
+  console.log('[SUSPEND] Service worker suspending, recording current time...');
+  await recordCurrentTabTime();
+  console.log('[SUSPEND] Time recorded before suspension');
+});
+
+// Detect when computer goes idle/locked
+chrome.idle.onStateChanged.addListener(async (newState) => {
+  console.log(`[IDLE] State changed to: ${newState}`);
+
+  if (newState === 'locked' || newState === 'idle') {
+    console.log('[IDLE] Computer locked/idle, stopping tracking');
+    await recordCurrentTabTime();
+    await clearTrackingState();
+  } else if (newState === 'active') {
+    console.log('[IDLE] Computer active again, resuming tracking');
+    // Find and start tracking active tab
+    try {
+      const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (tabs.length > 0) {
+        await startTrackingTab(tabs[0].id, tabs[0].url);
+      }
+    } catch (error) {
+      console.error('[IDLE] Error resuming tracking:', error);
+    }
+  }
+});
+
+// Set idle detection to 60 seconds
+chrome.idle.setDetectionInterval(60);
 
 // Initialize database immediately
 console.log('[INIT] Service worker started');
