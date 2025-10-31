@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Screen Time Tracker",
-  "description": "Track usage of websites",
+  "description": "Track your daily website usage and set time limits. Get notified when approaching limits and automatically close tabs when exceeded.",
   "version": "1.0",
   "action": {
     "default_popup": "popup/popup.html"

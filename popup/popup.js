@@ -1,107 +1,8 @@
 const dbName = 'usageDataDB';
 const storeName = 'usageStore';
 let db = null;
-const usageField = document.getElementById("usage-list"); // The container where the usage data will be displayed
-const limitsSelect = document.getElementById("limits-select"); // The dropdown for limits
+let currentEditingHostname = null; // Track which hostname is being edited
 
-  document.addEventListener("DOMContentLoaded", () => {
-    const addLimitButton = document.getElementById("add-limit-button");
-    const limitModal = document.getElementById("limit-modal");
-    const modalBackground = document.getElementById("modal-background");
-    const cancelModalButton = document.getElementById("cancel-modal");
-    const modalCloseButton = document.getElementById("modal-close");
-    const saveLimitButton = document.getElementById("save-limit");
-
-  // Function to open the modal
-  function openModal() {
-    limitModal.classList.add("is-active");
-  }
-
-  // Function to close the modal
-  function closeModal() {
-    limitModal.classList.remove("is-active");
-  }
-  function loadLimits() {
-    console.log("[loadLimits] Attempting to load limits...");
-  
-    const limitsSelect = document.getElementById("limits-select");
-    if (!limitsSelect) {
-      console.error("[loadLimits] Error: Limits dropdown element not found.");
-      return;
-    }
-  
-    // Clear previous options
-    limitsSelect.innerHTML = "";
-  
-    // Retrieve limits from chrome.storage.local
-    chrome.storage.local.get(["limits"], (data) => {
-      if (chrome.runtime.lastError) {
-        console.error("[loadLimits] Error accessing chrome.storage:", chrome.runtime.lastError);
-        return;
-      }
-  
-      const limits = data.limits || {};
-      console.log("[loadLimits] Retrieved limits:", limits);
-  
-      if (Object.keys(limits).length === 0) {
-        // If no limits, show a placeholder
-        const placeholder = document.createElement("option");
-        placeholder.textContent = "No limits set";
-        placeholder.disabled = true;
-        placeholder.selected = true;
-        limitsSelect.appendChild(placeholder);
-      } else {
-        // Populate dropdown with limits
-        Object.entries(limits).forEach(([website, limit]) => {
-          const option = document.createElement("option");
-          option.textContent = `${website} - ${limit} minutes`;
-          limitsSelect.appendChild(option);
-        });
-      }
-    });
-  }
-  
-  // Function to save the limit
-  function saveLimit() {
-    const websiteUrl = document.getElementById("website-url").value.trim();
-    const timeLimit = parseInt(document.getElementById("time-limit").value.trim(), 10);
-
-    if (!websiteUrl || isNaN(timeLimit) || timeLimit <= 0) {
-      alert("Please enter a valid URL and time limit.");
-      return;
-    }
-
-    let domain;
-    try {
-      domain = new URL(websiteUrl).hostname; // Simplify URL to hostname
-    } catch (error) {
-      alert("Invalid URL format. Please enter a valid URL.");
-      return;
-    }
-
-    // Save the limit in chrome.storage.local
-    chrome.storage.local.get(["limits"], (data) => {
-      const limits = data.limits || {};
-      limits[domain] = timeLimit;
-
-      chrome.storage.local.set({ limits }, () => {
-        alert(`Limit set: ${domain} - ${timeLimit} minutes`);
-        closeModal(); // Close modal after saving
-        loadLimits(); // Refresh limits dropdown
-      });
-    });
-  }
-
-  // Attach event listeners
-  addLimitButton.addEventListener("click", openModal);
-  modalBackground.addEventListener("click", closeModal);
-  cancelModalButton.addEventListener("click", closeModal);
-  modalCloseButton.addEventListener("click", closeModal);
-  saveLimitButton.addEventListener("click", saveLimit);
-
-  // Load existing limits (defined elsewhere)
-  loadLimits();
-});
 // Open the IndexedDB database
 function openDatabase() {
   console.log("[openDatabase] Initializing IndexedDB...");
@@ -156,82 +57,292 @@ function fetchUsageData() {
   });
 }
 
-// Format and display usage data
-function formatUsageData(usageData) {
-  console.log("[formatUsageData] Formatting and displaying usage data...");
-  usageField.innerHTML = ''; // Clear previous data
-  const usageList = document.createElement("ul");
-  // usageList.style.marginLeft = "1em";
-  let totalTime = 0;
-
-  Object.entries(usageData).forEach(([website, time]) => {
-    if (time !== undefined && time !== null) {
-      console.log(`[formatUsageData] Adding to UI - Website: ${website}, Time: ${time} minutes`);
-      const listItem = document.createElement("li");
-      listItem.textContent = `${website}: ${time} minutes`;
-      usageList.appendChild(listItem);
-      totalTime += time;
-    }
+// Fetch limits from chrome.storage.local
+function getLimits() {
+  console.log("[getLimits] Fetching limits from chrome.storage.local...");
+  return new Promise((resolve) => {
+    chrome.storage.local.get(["limits"], (data) => {
+      console.log("[getLimits] Limits fetched:", data.limits || {});
+      resolve(data.limits || {});
+    });
   });
-
-  const totalTimeElement = document.createElement("p");
-  totalTimeElement.style.marginLeft = "3em";
-  totalTimeElement.textContent = `Total Time: ${totalTime} minutes`;
-  usageField.appendChild(totalTimeElement);
-  usageField.appendChild(usageList);
-  console.log("[formatUsageData] Usage data displayed successfully.");
 }
 
-// Update UI with the latest usage data
-async function updateUsageUI() {
-  console.log("[updateUsageUI] Starting UI update...");
-  usageField.innerHTML = ''; // Clear previous usage data
+// Format time in a human-readable way
+function formatTime(minutes) {
+  if (minutes < 60) {
+    return `${minutes} min`;
+  }
+  const hours = Math.floor(minutes / 60);
+  const mins = minutes % 60;
+  return `${hours}h ${mins}m`;
+}
+
+// Create a usage item with progress bar
+function createUsageItem(hostname, usedTime, limit) {
+  const item = document.createElement('div');
+  item.className = 'usage-item';
+
+  const header = document.createElement('div');
+  header.className = 'usage-header';
+
+  const info = document.createElement('div');
+  info.className = 'usage-info';
+
+  const websiteName = document.createElement('strong');
+  websiteName.textContent = hostname;
+
+  const timeText = document.createElement('span');
+  timeText.textContent = formatTime(usedTime);
+
+  info.appendChild(websiteName);
+  info.appendChild(timeText);
+
+  // Add warning badge if limit is set
+  if (limit) {
+    const percentage = (usedTime / limit) * 100;
+    const limitText = document.createElement('span');
+    limitText.className = 'tag is-info is-light';
+    limitText.textContent = `Limit: ${formatTime(limit)}`;
+    info.appendChild(limitText);
+
+    if (percentage >= 90) {
+      const warningBadge = document.createElement('span');
+      warningBadge.className = 'warning-badge high';
+      warningBadge.textContent = '⚠ 90%+';
+      info.appendChild(warningBadge);
+    } else if (percentage >= 80) {
+      const warningBadge = document.createElement('span');
+      warningBadge.className = 'warning-badge medium';
+      warningBadge.textContent = '⚠ 80%+';
+      info.appendChild(warningBadge);
+    }
+  }
+
+  // Add action buttons
+  const actions = document.createElement('div');
+  actions.className = 'limit-actions';
+
+  if (limit) {
+    const editBtn = document.createElement('button');
+    editBtn.className = 'button is-small is-info';
+    editBtn.textContent = 'Edit';
+    editBtn.onclick = () => openEditModal(hostname, limit);
+    actions.appendChild(editBtn);
+
+    const deleteBtn = document.createElement('button');
+    deleteBtn.className = 'button is-small is-danger';
+    deleteBtn.textContent = 'Delete';
+    deleteBtn.onclick = () => deleteLimit(hostname);
+    actions.appendChild(deleteBtn);
+  } else {
+    const addLimitBtn = document.createElement('button');
+    addLimitBtn.className = 'button is-small is-success';
+    addLimitBtn.textContent = 'Set Limit';
+    addLimitBtn.onclick = () => openEditModal(hostname, null);
+    actions.appendChild(addLimitBtn);
+  }
+
+  header.appendChild(info);
+  header.appendChild(actions);
+  item.appendChild(header);
+
+  // Add progress bar if limit is set
+  if (limit) {
+    const progressContainer = document.createElement('div');
+    const progress = document.createElement('progress');
+    progress.className = 'progress';
+    progress.max = limit;
+    progress.value = Math.min(usedTime, limit);
+
+    // Color the progress bar based on usage percentage
+    const percentage = (usedTime / limit) * 100;
+    if (percentage >= 100) {
+      progress.className = 'progress is-danger';
+    } else if (percentage >= 90) {
+      progress.className = 'progress is-danger';
+    } else if (percentage >= 80) {
+      progress.className = 'progress is-warning';
+    } else if (percentage >= 50) {
+      progress.className = 'progress is-info';
+    } else {
+      progress.className = 'progress is-success';
+    }
+
+    const percentageText = document.createElement('p');
+    percentageText.className = 'help';
+    percentageText.textContent = `${Math.min(percentage, 100).toFixed(0)}% of daily limit used`;
+
+    progressContainer.appendChild(progress);
+    progressContainer.appendChild(percentageText);
+    item.appendChild(progressContainer);
+  }
+
+  return item;
+}
+
+// Display usage data with limits
+async function displayUsageData() {
+  console.log("[displayUsageData] Starting to display usage data...");
+  const usageListElement = document.getElementById("usage-list");
+  usageListElement.innerHTML = '';
+
   try {
     const usageData = await fetchUsageData();
-    if (usageData.length > 0) {
-      console.log("[updateUsageUI] Usage data retrieved:", usageData);
-      const formattedData = usageData.reduce((acc, record) => {
-        acc[record.hostname] = record.time;
-        return acc;
-      }, {});
-      formatUsageData(formattedData); // Display the usage data
+    const limits = await getLimits();
+
+    if (usageData.length === 0 && Object.keys(limits).length === 0) {
+      usageListElement.innerHTML = '<p class="help">No usage data yet. Start browsing to track your time!</p>';
+      return;
+    }
+
+    // Create a map of all websites (from usage and limits)
+    const allWebsites = new Set();
+    usageData.forEach(record => allWebsites.add(record.hostname));
+    Object.keys(limits).forEach(hostname => allWebsites.add(hostname));
+
+    // Convert to array and sort by usage time (descending)
+    const websiteList = Array.from(allWebsites).map(hostname => {
+      const usageRecord = usageData.find(r => r.hostname === hostname);
+      const usedTime = usageRecord ? usageRecord.time : 0;
+      const limit = limits[hostname] || null;
+      return { hostname, usedTime, limit };
+    });
+
+    // Sort by used time (highest first)
+    websiteList.sort((a, b) => b.usedTime - a.usedTime);
+
+    // Create usage items
+    if (websiteList.length === 0) {
+      usageListElement.innerHTML = '<p class="help">No usage data yet. Start browsing to track your time!</p>';
     } else {
-      console.log("[updateUsageUI] No usage data found.");
-      usageField.textContent = "Usage: No data available";
+      websiteList.forEach(({ hostname, usedTime, limit }) => {
+        const item = createUsageItem(hostname, usedTime, limit);
+        usageListElement.appendChild(item);
+      });
+
+      // Add total time
+      const totalTime = websiteList.reduce((sum, w) => sum + w.usedTime, 0);
+      const totalElement = document.createElement('div');
+      totalElement.className = 'box has-background-info-light mt-3';
+      totalElement.innerHTML = `<strong>Total Time Today:</strong> ${formatTime(totalTime)}`;
+      usageListElement.appendChild(totalElement);
     }
   } catch (error) {
-    console.error("[updateUsageUI] Error updating UI:", error);
-    usageField.textContent = "Usage: Error loading data";
+    console.error("[displayUsageData] Error displaying data:", error);
+    usageListElement.innerHTML = '<p class="has-text-danger">Error loading usage data</p>';
   }
 }
 
-// Auto-load data when popup is opened
+// Modal functions
+function openModal() {
+  document.getElementById("limit-modal").classList.add("is-active");
+  document.getElementById("modal-title").textContent = "Set Website Limit";
+  document.getElementById("website-url").value = '';
+  document.getElementById("time-limit").value = '';
+  document.getElementById("website-url").disabled = false;
+  currentEditingHostname = null;
+}
+
+function openEditModal(hostname, currentLimit) {
+  document.getElementById("limit-modal").classList.add("is-active");
+  document.getElementById("modal-title").textContent = currentLimit ? "Edit Website Limit" : "Set Website Limit";
+  document.getElementById("website-url").value = hostname;
+  document.getElementById("time-limit").value = currentLimit || '';
+  document.getElementById("website-url").disabled = !!currentLimit; // Disable if editing
+  currentEditingHostname = hostname;
+}
+
+function closeModal() {
+  document.getElementById("limit-modal").classList.remove("is-active");
+  currentEditingHostname = null;
+}
+
+// Save or update limit
+async function saveLimit() {
+  const websiteUrl = document.getElementById("website-url").value.trim();
+  const timeLimit = parseInt(document.getElementById("time-limit").value.trim(), 10);
+
+  if (!websiteUrl || isNaN(timeLimit) || timeLimit <= 0) {
+    alert("Please enter a valid URL and time limit.");
+    return;
+  }
+
+  let domain;
+  try {
+    // Try to parse as URL first
+    try {
+      domain = new URL(websiteUrl.startsWith('http') ? websiteUrl : 'https://' + websiteUrl).hostname;
+    } catch {
+      // If that fails, assume it's already a hostname
+      domain = websiteUrl;
+    }
+  } catch (error) {
+    alert("Invalid URL format. Please enter a valid URL or domain name.");
+    return;
+  }
+
+  // Save the limit in chrome.storage.local
+  chrome.storage.local.get(["limits"], (data) => {
+    const limits = data.limits || {};
+    limits[domain] = timeLimit;
+
+    chrome.storage.local.set({ limits }, () => {
+      console.log(`[saveLimit] Limit set: ${domain} - ${timeLimit} minutes`);
+      closeModal();
+      displayUsageData(); // Refresh the display
+    });
+  });
+}
+
+// Delete a limit
+function deleteLimit(hostname) {
+  if (!confirm(`Are you sure you want to delete the limit for ${hostname}?`)) {
+    return;
+  }
+
+  chrome.runtime.sendMessage({ action: 'deleteLimit', hostname }, (response) => {
+    if (response && response.status === 'success') {
+      console.log(`[deleteLimit] Limit deleted for ${hostname}`);
+      displayUsageData(); // Refresh the display
+    }
+  });
+}
+
+// Reset all usage data
+function resetUsageData() {
+  if (!confirm("Are you sure you want to reset all usage data? This cannot be undone.")) {
+    return;
+  }
+
+  chrome.runtime.sendMessage({ action: 'resetUsageData' }, (response) => {
+    if (response && response.status === 'success') {
+      console.log("[resetUsageData] Usage data reset successfully");
+      displayUsageData(); // Refresh the display
+    }
+  });
+}
+
+// Initialize when DOM is loaded
 document.addEventListener("DOMContentLoaded", () => {
   console.log("[DOMContentLoaded] Popup loaded. Initializing...");
+
+  // Set up event listeners
+  document.getElementById("add-limit-button").addEventListener("click", openModal);
+  document.getElementById("reset-usage-button").addEventListener("click", resetUsageData);
+  document.getElementById("modal-background").addEventListener("click", closeModal);
+  document.getElementById("cancel-modal").addEventListener("click", closeModal);
+  document.getElementById("modal-close").addEventListener("click", closeModal);
+  document.getElementById("save-limit").addEventListener("click", saveLimit);
+
+  // Open database and display data
   openDatabase()
     .then(() => {
       console.log("[DOMContentLoaded] Database initialized successfully.");
-      return updateUsageUI(); // Fetch and display usage data
+      return displayUsageData();
     })
     .catch((error) => {
-      console.error("[DOMContentLoaded] Error initializing database:", error);
-      usageField.textContent = "Error initializing database";
+      console.error("[DOMContentLoaded] Error initializing:", error);
+      document.getElementById("usage-list").innerHTML = '<p class="has-text-danger">Error initializing extension</p>';
     });
 });
-
-// Listen for messages from the background script to refresh usage data
-// chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
-//   console.log("[onMessage] Message received:", request);
-//   if (request.msg === "update_usage") {
-//     console.log("[onMessage] Received 'update_usage' message. Refreshing data...");
-//     updateUsageUI()
-//       .then(() => {
-//         console.log("[onMessage] UI updated successfully.");
-//         sendResponse({ status: "Usage updated in popup" });
-//       })
-//       .catch((error) => {
-//         console.error("[onMessage] Error updating UI:", error);
-//         sendResponse({ status: "Error updating usage" });
-//       });
-//   }
-// });

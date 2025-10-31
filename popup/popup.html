@@ -3,56 +3,101 @@
 <head>
     <meta charset="UTF-8">
     <meta http-equiv="X-UA-Compatible" content="IE=edge">
-    <title>Screen Time</title>
+    <title>Screen Time Tracker</title>
     <link rel="stylesheet" href="bulma.min.css" />
+    <style>
+      body {
+        width: 500px;
+        min-height: 400px;
+        max-height: 600px;
+        overflow-y: auto;
+      }
+      .usage-item {
+        margin-bottom: 1rem;
+        padding: 0.75rem;
+        background-color: #f5f5f5;
+        border-radius: 4px;
+      }
+      .usage-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 0.5rem;
+      }
+      .usage-info {
+        display: flex;
+        gap: 1rem;
+        align-items: center;
+      }
+      .warning-badge {
+        padding: 0.25rem 0.5rem;
+        border-radius: 4px;
+        font-size: 0.75rem;
+        font-weight: bold;
+      }
+      .warning-badge.high {
+        background-color: #f14668;
+        color: white;
+      }
+      .warning-badge.medium {
+        background-color: #ffdd57;
+        color: #000;
+      }
+      .limit-actions {
+        display: flex;
+        gap: 0.5rem;
+      }
+    </style>
 </head>
 <body>
 
   <div class="container m-3">
-    <h1 class="title">Screen Time</h1>
+    <h1 class="title is-4">Screen Time Tracker</h1>
   </div>
 
   <div class="container m-3">
     <div class="field">
-      <label class="label">Usage: </label>
+      <label class="label">Today's Usage</label>
       <div id="usage-list"></div>
     </div>
-
-    <div class="field">
-      <label class="label">Limits</label>
-      <div class="select">
-        <select id="limits-select">
-          <!-- Limits will be populated here dynamically -->
-        </select>
-      </div>
-    </div>
   </div>
 
   <div class="container m-3">
-    <button class="button is-success" id="add-limit-button">Add Limits</button>
+    <div class="buttons">
+      <button class="button is-success" id="add-limit-button">
+        <span>Add Limit</span>
+      </button>
+      <button class="button is-danger" id="reset-usage-button">
+        <span>Reset Usage</span>
+      </button>
+    </div>
   </div>
 
-  <!-- Modal for adding new limit -->
+  <!-- Modal for adding/editing limit -->
   <div id="limit-modal" class="modal">
     <div class="modal-background" id="modal-background"></div>
     <div class="modal-content">
       <div class="box">
-        <h1 class="title">Set Website Limit</h1>
+        <h1 class="title is-5" id="modal-title">Set Website Limit</h1>
         <div class="field">
           <label class="label">Website URL</label>
           <div class="control">
-            <input type="text" id="website-url" class="input" placeholder="Enter website URL">
+            <input type="text" id="website-url" class="input" placeholder="e.g., youtube.com or https://youtube.com">
           </div>
+          <p class="help">Enter just the domain name (e.g., youtube.com) or a full URL</p>
         </div>
         <div class="field">
           <label class="label">Time Limit (in minutes)</label>
           <div class="control">
-            <input type="number" id="time-limit" class="input" placeholder="Enter time limit">
+            <input type="number" id="time-limit" class="input" placeholder="Enter time limit" min="1">
           </div>
+          <p class="help">Set how many minutes per day you want to allow for this website</p>
         </div>
         <div class="field">
-          <button id="save-limit" class="button is-success">Save Limit</button>
-          <button id="cancel-modal" class="button is-danger">Cancel</button>
+          <div class="buttons">
+            <button id="save-limit" class="button is-success">Save Limit</button>
+            <button id="cancel-modal" class="button">Cancel</button>
+          </div>
         </div>
       </div>
     </div>
