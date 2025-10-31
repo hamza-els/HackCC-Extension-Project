@@ -245,15 +245,6 @@ async function recordCurrentTabTime() {
   // Calculate elapsed time in seconds
   const elapsedSeconds = Math.floor((Date.now() - state.activeTabStartTime) / 1000);
 
-  // SAFETY CHECK: If elapsed time is more than 10 minutes, something is wrong
-  // (computer was asleep, browser was closed, etc.)
-  const MAX_ELAPSED_SECONDS = 600; // 10 minutes
-  if (elapsedSeconds > MAX_ELAPSED_SECONDS) {
-    console.log(`[TRACK] WARNING: Elapsed time too long (${elapsedSeconds}s / ${Math.floor(elapsedSeconds/60)}min). Likely due to sleep/suspend. Clearing tracking state.`);
-    await clearTrackingState();
-    return;
-  }
-
   if (elapsedSeconds < 1) {
     console.log('[TRACK] Less than 1 second elapsed, skipping');
     return;
